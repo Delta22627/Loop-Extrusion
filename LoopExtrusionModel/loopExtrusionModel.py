@@ -31,7 +31,6 @@ class Genome:
         
     def __str__(self):
         return str(self.array)
-            
         
         
 class Extruder:
@@ -143,13 +142,21 @@ class Simulator:
         plt.plot(ts, self.n_bound, label="bound")
         plt.plot(ts, self.n_active, label="active")
     
-    def plot_fold(self):
-        for i, e in enumerate(self.extruders):
-            start, end = e.get_position()
-            if start != None and end != None:
-                xs = np.linspace(start,end)
-                ys = np.full(len(xs) ,i)
-                plt.plot(xs, ys, c = e.color())
+    def plot_fold(self, i=None):
+        if i is None:
+            for j, e in enumerate(self.extruders):
+                start, end = e.get_position()
+                if start != None and end != None:
+                    xs = np.linspace(start,end)
+                    ys = np.full(len(xs), j)
+                    plt.plot(xs, ys, c = e.color())
+        else:
+            for j, e in enumerate(self.extruders):
+                start, end = e.get_position()
+                if start != None and end != None:
+                    xs = np.linspace(start,end)
+                    ys = np.full(len(xs), i)
+                    plt.plot(xs, ys, c = e.color())
             
         
     def _simulate_one_step(self, i):
