@@ -2,10 +2,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 from enum import Enum
 
-
 class Genome:
         
-    def __init__(self, seed, length=10000, cohesin_stopper_gap=100, condensin_stopper_gap=20):
+    def __init__(self, seed, length=10000, cohesin_stopper_gap=8, condensin_stopper_gap=40):
         np.random.default_rng(seed)
         cohesin_stopper_p = 1/cohesin_stopper_gap
         condensin_stopper_p = 1/condensin_stopper_gap
@@ -31,12 +30,12 @@ class Genome:
         
     def __str__(self):
         return str(self.array)
-        
-        
+            
 class Extruder:
     
-    def __init__(self, stalling_prob):
+    def __init__(self, stalling_prob, dissociation_prob):
         self.stalling_prob = stalling_prob
+        self.dissociation_prob = dissociation_prob
         
         self.active = True
         self.left = True
@@ -78,8 +77,19 @@ class Extruder:
     def get_position(self):
         return self.current_left, self.current_right
     
-    
+    def reset(self):
+        self.active = True
+        self.left = True
+        self.right = True
+        self.bind = False
+        
+        self.current_left = None
+        self.current_right = None
+
 class Cohesin(Extruder):
+    
+    def name(self):
+        return "Cohesin"
     
     def stop_i(self):
         return 1
@@ -90,7 +100,11 @@ class Cohesin(Extruder):
     def __str__(self):
         return f"Cohesin at {self.get_position()}"
     
+
 class Condensin(Extruder):
+    
+    def name(self):
+        return "Condensin"
     
     def stop_i(self):
         return 2
@@ -107,13 +121,12 @@ class ExtruderType(Enum):
     
 class ExtruderFactory:
     
-    def get(e_type, stalling_prob=1):
+    def get(e_type, stalling_prob=1,  dissociation_prob=1):
         
         return {
-            ExtruderType.COHESIN: Cohesin(stalling_prob),
-            ExtruderType.CONDENSIN: Condensin(stalling_prob)
+            ExtruderType.COHESIN: Cohesin(stalling_prob, dissociation_prob),
+            ExtruderType.CONDENSIN: Condensin(stalling_prob, dissociation_prob)
         }.get(e_type,0)
-    
     
 class Simulator:
     
@@ -129,7 +142,8 @@ class Simulator:
         self.n_bound = list()
         self.n_active = list()
         self.time = 0
-        
+        self.extruders_domains = dict()
+
     def simulate(self, time):
         self.time += time
         for i in range(time):
@@ -157,7 +171,29 @@ class Simulator:
                     xs = np.linspace(start,end)
                     ys = np.full(len(xs), i)
                     plt.plot(xs, ys, c = e.color())
-            
+    
+    def average_domain(self):
+        if not self.extruders_domains:
+            extruders_mean = dict()
+            for e in self.extruders:
+                start, end = e.get_position()
+                if start != None and end != None:
+                    domain = end - start
+                    if self.extruders_domains.get(e.name()) is None:
+                        self.extruders_domains[e.name()] = [domain]
+                    else:
+                        self.extruders_domains[e.name()].append(domain)
+        for key in self.extruders_domains:
+            extruders_mean[key] = np.mean(self.extruders_domains[key])
+        return extruders_mean  
+        
+        
+    def boxplot(self):
+        if not self.extruders_domains:
+            self.average_domain()
+        labels, data = [*zip(*self.extruders_domains.items())]
+        plt.boxplot(data)
+        plt.xticks(range(1, len(labels) + 1), labels)
         
     def _simulate_one_step(self, i):
         if i*self.extruders_per_i < len(self.extruders):
@@ -167,6 +203,7 @@ class Simulator:
                 if index >= len(self.extruders):
                     break
                 self._sim_one_helper(l_site, index, False)
+        self._dissociate()
         start_sites = self._get_start_sites(np.sum(self.unbound))
         try:
             current_unbound = np.nditer(np.where(self.unbound))
@@ -210,14 +247,29 @@ class Simulator:
                     self._set_direction(extruder, right, n_right, "right")
         except ValueError:
             pass
+        
+    def _dissociate(self):
+        try:
+            for i in np.nditer(np.where(self.bound)):
+                dissociation_prob = np.random.random()
+                extruder = self.extruders[i]
+                l_site, r_site = extruder.get_position()
+                if extruder.dissociation_prob < dissociation_prob:
+                    self.genome.update_occupited(l_site, False)
+                    self.genome.update_occupited(r_site, False)
+                    extruder.reset()
+                    self.unbound[i] = True
+                    self.bound[i] = False
+        except ValueError:
+            pass
     
     def _set_direction(self, extruder, current, i, direction):
         if not self.genome.is_occupited(i):
-            dissociate_prob = np.random.random()
+            stalling_prob = np.random.random()
             extruder.set_direction(i, direction)
             self.genome.update_occupited(i, True)
             self.genome.update_occupited(current, False)
-            if (self.genome.array[i] == extruder.stop_i()) and (extruder.stalling_prob > dissociate_prob):
+            if (self.genome.array[i] == extruder.stop_i()) and (extruder.stalling_prob > stalling_prob):
                 extruder.set_direction_status(False, direction)
         elif self.genome.is_occupited(i):
             extruder.set_direction_status(False, direction)
@@ -227,10 +279,13 @@ class Simulator:
         choices = {
             "cohesin" : [self.extruder_factory.get(ExtruderType.COHESIN) for i in range(int(n_extruder))],
             "both" : [self.extruder_factory.get(ExtruderType.COHESIN) for i in range(int(n_extruder//2))],
-            "both_0.2" : [self.extruder_factory.get(ExtruderType.COHESIN, 0.2) for i in range(int(n_extruder//2))]
+            "both_0.2" : [self.extruder_factory.get(ExtruderType.COHESIN, stalling_prob=0.2) for i in range(int(n_extruder//2))],
+            "both_d_0.5" : [self.extruder_factory.get(ExtruderType.COHESIN, stalling_prob=1, dissociation_prob=0.5) for i in range(int(n_extruder//2))]
         } 
+        
         choices["both"].extend([self.extruder_factory.get(ExtruderType.CONDENSIN) for i in range(int(n_extruder//2))])
-        choices["both_0.2"].extend([self.extruder_factory.get(ExtruderType.CONDENSIN, 0.2) for i in range(int(n_extruder//2))])
+        choices["both_0.2"].extend([self.extruder_factory.get(ExtruderType.CONDENSIN,stalling_prob=0.2) for i in range(int(n_extruder//2))])
+        choices["both_d_0.5"].extend([self.extruder_factory.get(ExtruderType.CONDENSIN, stalling_prob=1, dissociation_prob=0.5) for i in range(int(n_extruder//2))])
         np.random.shuffle(choices[option])
         return choices[option]
         
